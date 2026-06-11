@@ -1,0 +1,71 @@
+name: Screenshot URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: URL to screenshot
+        required: true
+        default: https://x.com/elonmusk
+      label:
+        description: Output label
+        required: true
+        default: elonmusk-latest
+
+permissions:
+  contents: write
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm init -y
+      - run: npm install playwright
+      - run: npx playwright install --with-deps chromium
+      - name: Capture latest visible post
+        run: |
+          cat > capture.mjs <<'EOF'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs/promises';
+
+          const url = process.env.TARGET_URL;
+          const label = process.env.LABEL || 'screenshot';
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          await fs.mkdir('images', { recursive: true });
+          const browser = await chromium.launch({ headless: true });
+          const context = await browser.newContext({
+            viewport: { width: 1280, height: 1600 },
+            deviceScaleFactor: 1,
+            locale: 'en-US',
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36'
+          });
+          const page = await context.newPage();
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+          await page.waitForTimeout(15000);
+          const article = page.locator('article[data-testid="tweet"]').first();
+          let path = `images/${label}-${stamp}.png`;
+          let mode = 'article';
+          try {
+            await article.waitFor({ state: 'visible', timeout: 60000 });
+            await article.screenshot({ path });
+          } catch (error) {
+            mode = 'fullpage-fallback';
+            path = `images/${label}-${stamp}-fallback.png`;
+            await page.screenshot({ path, fullPage: true });
+          }
+          await fs.writeFile('images/latest.json', JSON.stringify({ url, path, mode, capturedAt: new Date().toISOString(), title: await page.title() }, null, 2));
+          await browser.close();
+          console.log(path);
+          EOF
+          TARGET_URL="${{ inputs.url }}" LABEL="${{ inputs.label }}" node capture.mjs
+      - name: Commit screenshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add images
+          git commit -m "Add screenshot for ${{ inputs.label }}" || exit 0
+          git push
